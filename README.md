@@ -4,7 +4,7 @@
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-blue.svg)](https://modelcontextprotocol.io)
 [![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://docker.com)
 
-A personal implementation of a Model Control Protocol (MCP) server showcasing weather data integration, calculator tools, and multi-transport support. Built as a learning project to demonstrate MCP protocol understanding and modern Python development practices.
+A personal implementation of a MCP Client consisting in a chatbot powered by Qwen3:7b and an MCP server showcasing weather data integration, calculator tools, and multi-transport support. Built as a learning project to demonstrate MCP protocol understanding.
 
 ## 🚀 Features
 
