@@ -195,20 +195,20 @@ async def main():
     if transport == "sse":
         # For SSE, expect URL as argument
         if len(sys.argv) < 2:
-            print("Usage for SSE: python claude_client.py <server_url>")
-            print("Example: python claude_client.py http://localhost:8050/sse")
+            print("Usage for SSE: python src/client.py <server_url>")
+            print("Example: python src/client.py http://localhost:8050/sse")
             sys.exit(1)
     elif transport == "streamable-http":
         # For streamable-http, expect URL as argument
         if len(sys.argv) < 2:
-            print("Usage for streamable-http: python claude_client.py <server_url>")
-            print("Example: python claude_client.py http://localhost:8050/mcp")
+            print("Usage for streamable-http: python src/client.py <server_url>")
+            print("Example: python src/client.py http://localhost:8050/mcp")
             sys.exit(1)
     else:
         # For STDIO, expect script path as argument  
         if len(sys.argv) < 2:
-            print("Usage for STDIO: python claude_client.py <path_to_server_script>")
-            print("Example: python claude_client.py server.py")
+            print("Usage for STDIO: python src/client.py <path_to_server_script>")
+            print("Example: python src/client.py src/server.py")
             sys.exit(1)
             
     server_path_or_url = sys.argv[1]

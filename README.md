@@ -31,6 +31,25 @@ CustomMCP/
 
 ```
 
+## How to Use
+
+1 - Set up your virtual environment and install the requirements :
+uv venv
+source venv/bin/activate
+uv pip install -r requirements.txt
+
+2 - Define the model you are going to run and the transport mode in .env (for example, MODEL=qwen3:8b and TRANSPORT=sse)
+
+3 - Run the client and the server, depending on your transport mode :
+
+stdio -> uv run src/client.py src/server.py
+
+sse -> in a terminal : uv run src/server.py 
+       in another terminal : uv run src/client.py <url_to_the_server>/sse     (e.g. http://localhost:8050/sse)
+
+streamable-http -> in a terminal : uv run src/server.py 
+                   in another terminal : uv run src/client.py <url_to_the_server>/mcp     (e.g. http://localhost:8050/mcp)
+
 
 
 ### Available Tools
