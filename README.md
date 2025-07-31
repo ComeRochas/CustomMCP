@@ -52,7 +52,7 @@ streamable-http -> in a terminal : uv run src/server.py
 
 
 
-### Available Tools
+## Available Tools
 
 #### Weather Tools
 - `get_forecast(latitude, longitude)` - Get 5-day weather forecast
