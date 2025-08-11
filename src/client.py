@@ -24,6 +24,12 @@ class MCPClient:
             base_url="http://localhost:11434/v1",  # Ollama API endpoint
             api_key="ollama"  # Ollama doesn't need a real API key
         )
+        self.messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Respond naturally to user queries. You may call a tool if it permits to answer the question. When absolutely no tools corresponds or you lack an argument, you are encouraged to take an initiative and infere the missing argument or the response based on your knowledge and be honest about the initiative you took."
+            }
+        ]
 
     async def connect_to_server(self, server_path_or_url: str):
         """Connect to an MCP server via STDIO or SSE based on TRANSPORT env variable
@@ -81,16 +87,7 @@ class MCPClient:
 
     async def process_query(self, query: str, model: str) -> str:
         """Process a query using Ollama and available tools"""
-        messages = [
-            {
-            "role": "system",
-            "content": "You are a helpful assistant. Respond naturally to user queries. You may call a tool if it permits to answer the question. When absolutely no tools corresponds or you lack an argument, you are encouraged to take an initiative and infere the missing argument or the response based on your knowledge and be honest about the initiative you took."
-            },
-            {
-            "role": "user",
-            "content": query
-            }
-        ]
+        self.messages.append({"role": "user", "content": query})
 
         tools_list = await self.session.list_tools()
         available_tools = [{ 
@@ -106,7 +103,7 @@ class MCPClient:
         response = await self.ollama_client.chat.completions.create(
             model=model,
             max_tokens=1000,
-            messages=messages,
+            messages=self.messages,
             tools=available_tools,
             tool_choice="auto"
         )
@@ -115,6 +112,7 @@ class MCPClient:
         final_text = []
 
         message = response.choices[0].message
+        self.messages.append(message)
 
         # For debugging
         if message.content and os.getenv("PRINT_ALL_MODEL_OUTPUT", "false").lower() == "true":
@@ -141,7 +139,7 @@ class MCPClient:
                         final_text.append(f"Tool call : {tool_name} was called, with result: {tool_result}...")
 
                     # Simplified conversation format for better understanding
-                    messages.append({
+                    self.messages.append({
                         "role": "tool",
                         "content": f"Tool call : {tool_name} was called, with result: {tool_result}..."
                     })
@@ -150,10 +148,12 @@ class MCPClient:
                     follow_up_response = await self.ollama_client.chat.completions.create(
                         model=model, 
                         max_tokens=1000,
-                        messages=messages,
+                        messages=self.messages,
                     )
 
-                    final_text.append("Response: " + follow_up_response.choices[0].message.content)
+                    response_message = follow_up_response.choices[0].message
+                    self.messages.append(response_message)
+                    final_text.append("Response: " + response_message.content)
 
                 except Exception as e:
                     final_text.append(f"[Error executing tool {tool_name}: {str(e)}]")
