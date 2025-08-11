@@ -112,7 +112,7 @@ class MCPClient:
         final_text = []
 
         message = response.choices[0].message
-        self.messages.append(message)
+        self.messages.append({"role": "assistant", "content": message.content})
 
         # For debugging
         if message.content and os.getenv("PRINT_ALL_MODEL_OUTPUT", "false").lower() == "true":
@@ -152,7 +152,7 @@ class MCPClient:
                     )
 
                     response_message = follow_up_response.choices[0].message
-                    self.messages.append(response_message)
+                    self.messages.append({"role": "assistant", "content": response_message.content})
                     final_text.append("Response: " + response_message.content)
 
                 except Exception as e:

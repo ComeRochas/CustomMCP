@@ -71,7 +71,7 @@ def create_server() -> FastMCP:
     # Register utility tools
     @server.tool()
     async def get_time(ctx: Context) -> str:
-        """Returns the current server date and time in UTC."""
+        """Get current UTC time in ISO format."""
         return await time_tools.get_current_time()
     
     return server
