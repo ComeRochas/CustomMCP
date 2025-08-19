@@ -14,7 +14,10 @@ from openai import AsyncOpenAI
 from groq import Groq
 from dotenv import load_dotenv
 
-load_dotenv()  # load environment variables from .env
+load_dotenv()
+
+def is_gpt_oss(model: str) -> bool:
+    return isinstance(model, str) and model.startswith("openai/gpt-oss")
 
 class MCPClient:
     def __init__(self):
@@ -28,6 +31,13 @@ class MCPClient:
                 "content": "You are a helpful assistant. Respond naturally to user queries. You may call a tool if it permits to answer the question. When absolutely no tools corresponds or you lack an argument, you are encouraged to take an initiative and infere the missing argument or the response based on your knowledge and be honest about the initiative you took."
             }
         ]
+        # Add a small Harmony nudge only when using GPT-OSS
+        model = os.getenv("MODEL", "llama3.1:8b")
+        if is_gpt_oss(model):
+            self.messages.append({
+                "role": "system",
+                "content": "Think privately if needed. Then ALWAYS provide a clear final answer in the assistant message body."
+            })
 
     async def connect_to_server(self, server_path_or_url: str):
         """Connect to an MCP server via STDIO or SSE based on TRANSPORT env variable
@@ -84,35 +94,78 @@ class MCPClient:
         print(f"Connected via {transport} to server with tools:", [tool.name for tool in tools])
 
     async def process_and_print(self, model: str, messages: list, available_tools: list, print_all_output: bool):
-        stream = self.client.chat.completions.create(
+        # Prepare common kwargs; add Harmony options if GPT-OSS
+        kwargs = dict(
             model=model,
             messages=messages,
             temperature=1.1,
             max_tokens=1000,
-            tools=available_tools,
-            stream=True  # Activer le streaming
+            stream=True
         )
+        if available_tools is not None:
+            kwargs["tools"] = available_tools
+
+        if is_gpt_oss(model):
+            kwargs["reasoning_effort"] = os.getenv("GPT_OSS_REASONING", "medium")
+
+        stream = self.client.chat.completions.create(**kwargs)
         
         # Variables pour gérer le streaming
-        response_message = []
+        response_message_chunks = []
         tool_calls = []
+        # Optionally capture reasoning chunks (kept internal)
+        reasoning_chunks = []
 
         for chunk in stream:
-            if chunk.choices[0].delta.content is not None:
-                content_chunk = chunk.choices[0].delta.content
-                response_message.append(content_chunk)
+            delta = chunk.choices[0].delta
+
+            # Visible content
+            if delta.content is not None:
+                content_chunk = delta.content
+                response_message_chunks.append(content_chunk)
                 if print_all_output:
                     print(content_chunk, end="")
 
-            # Gérer les tool calls si présents
-            if chunk.choices[0].delta.tool_calls:
-                tool_calls.extend(chunk.choices[0].delta.tool_calls)
+            # Reasoning stream (GPT-OSS)
+            if hasattr(delta, "reasoning") and delta.reasoning:
+                reasoning_chunks.append(delta.reasoning)
+                if print_all_output:
+                    print(delta.reasoning, end="")
+
+            # Tool calls
+            if delta.tool_calls:
+                tool_calls.extend(delta.tool_calls)
 
         if print_all_output:
             print()  # Retour à la ligne final
 
         # Assembler le contenu complet
-        response_message = "".join(response_message)
+        response_message = "".join(response_message_chunks).strip()
+        if not response_message:
+            response_message = "Reasoning : " + "".join(reasoning_chunks).strip()
+            
+        # Harmony fallback: if content is empty, try a non-stream fetch for final or reasoning
+        if not response_message:
+            print("No response received, attempting fallback...") #for debugging
+            try:
+                non_stream_kwargs = dict(
+                    model=model,
+                    messages=messages,
+                    temperature=1.1,
+                    max_tokens=1000,
+                    stream=False
+                )
+                if is_gpt_oss(model):
+                    non_stream_kwargs["reasoning_effort"] = os.getenv("GPT_OSS_REASONING", "medium")
+
+                resp = self.client.chat.completions.create(**non_stream_kwargs)
+                msg = resp.choices[0].message
+                response_message = (msg.content or getattr(msg, "reasoning", "") or "").strip()
+            except Exception:
+                # As a last resort, if we captured streamed reasoning, expose a trimmed version
+                if reasoning_chunks:
+                    response_message = "".join(reasoning_chunks).strip()[:800]
+
         return response_message, tool_calls
 
     async def execute_tool_call(self, tool_call, print_all_output: bool) -> str:
@@ -139,8 +192,8 @@ class MCPClient:
         return tool_result
 
     async def process_query(self, query: str, model: str, print_all_output: bool) -> str:
-        """Process a query using Ollama and available tools"""
-        messages = self.messages + [{"role": "user", "content": query}]
+        """Process a query using Groq (OpenAI-compatible) and available tools"""
+        messages = list(self.messages) + [{"role": "user", "content": query}]
 
         tools_list = await self.session.list_tools()
         available_tools = [{"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.inputSchema}} for tool in tools_list.tools]
@@ -149,13 +202,13 @@ class MCPClient:
 
         messages.append({"role": "assistant", "content": response_message})
 
-        if not tool_calls: # If no tool call is needed, simply print the first response (if not already printed)
+        if not tool_calls:  # If no tool call is needed, simply print the first response (if not already printed)
             if not print_all_output:
                 print("No tools needed. \n")
                 print(response_message)
         
         else:
-            if len(tool_calls) > 1: # for debug/curiosity
+            if len(tool_calls) > 1:  # for debug/curiosity
                 print(f"Multiple tool calls: \n{len(tool_calls)} tool calls detected.")
             for tool_call in tool_calls:
                 tool_result = await self.execute_tool_call(tool_call, print_all_output=print_all_output)
@@ -164,13 +217,15 @@ class MCPClient:
 
                 # Simplified conversation format for better understanding
                 messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": f"Tool call : {tool_call.function.name} was called, with result: {tool_result}"
+                    "role": "assistant",
+                    "content": f"Tool call : {tool_call.function.name} was called with arguments {tool_call.function.arguments}, with result: {tool_result}"
                 })
 
-            # Generate final response
-            await self.process_and_print(model, messages, available_tools=None, print_all_output=True)
+            # Generate final response (no tools this time). This format enables to work further with the response.
+            messages.append({
+                "role": "assistant",
+                "content": await self.process_and_print(model, messages, available_tools=None, print_all_output=True)
+            })
 
 
     async def chat_loop(self):
