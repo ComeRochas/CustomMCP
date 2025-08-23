@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import logging
 import os
 from config import config
-from tools import CalculatorTools, WeatherTools, TimeTools
+from tools import CalculatorTools, WeatherTools, TimeTools, LocationTools, WebTools
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +23,8 @@ def create_server() -> FastMCP:
     calc_tools = CalculatorTools()
     weather_tools = WeatherTools()
     time_tools = TimeTools()
+    location_tools = LocationTools()
+    web_tools = WebTools()
     
     # Register calculator tools
     @server.tool()
@@ -74,6 +76,80 @@ def create_server() -> FastMCP:
         """Get current UTC time in ISO format."""
         return await time_tools.get_current_time()
     
+    # Register location tools
+    @server.tool()
+    async def get_location() -> dict:
+        """Get current location using IP geolocation.
+        
+        Returns location information including coordinates, city, country, and timezone.
+        """
+        try:
+            return await location_tools.get_location()
+        except Exception as e:
+            logger.error(f"Location error: {e}")
+            return {
+                'status': 'error',
+                'message': f"Error retrieving location: {str(e)}"
+            }
+    
+    @server.tool()
+    async def get_location_by_ip(ip_address: str) -> dict:
+        """Get location information for a specific IP address.
+        
+        Args:
+            ip_address: The IP address to geolocate
+            
+        Returns location information for the given IP address.
+        """
+        try:
+            return await location_tools.get_location_by_ip(ip_address)
+        except Exception as e:
+            logger.error(f"IP location error: {e}")
+            return {
+                'status': 'error',
+                'message': f"Error retrieving location for IP {ip_address}: {str(e)}"
+            }
+    
+    # Register web search tools
+    @server.tool()
+    async def duckduckgo_search(query: str, max_results: int = 5) -> list:
+        """Search the web using DuckDuckGo.
+        
+        Args:
+            query: Search query string
+            max_results: Maximum number of results to return (1-20, default: 5)
+            
+        Returns a list of search results with title, URL, and snippet.
+        """
+        try:
+            return await web_tools.duckduckgo_search(query, max_results)
+        except Exception as e:
+            logger.error(f"Web search error: {e}")
+            return [{
+                'error': True,
+                'message': f"Web search failed: {str(e)}"
+            }]
+    
+    
+    @server.tool()
+    async def fetch_url_content(url: str, max_length: int = 5000, mode: str = "raw") -> dict:
+        """Fetch and extract text content from a URL.
+        
+        Args:
+            url: URL to fetch content from
+            max_length: Maximum length of text content to return (default: 5000)
+            mode: "raw" returns HTML text; "readable" returns extracted article text
+        """
+        try:
+            return await web_tools.fetch_url_content(url, max_length, mode)
+        except Exception as e:
+            logger.error(f"URL fetch error: {e}")
+            return {
+                'url': url,
+                'status': 'error',
+                'message': f"Failed to fetch URL: {str(e)}"
+            }
+
     return server
 
 def main():

@@ -4,3 +4,7 @@ python-dotenv
 ipykernel
 httpx
 anthropic
+aiohttp
+groq
+duckduckgo-search
+trafilatura

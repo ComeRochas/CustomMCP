@@ -28,11 +28,11 @@ class MCPClient:
         self.messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Respond naturally to user queries. You may call a tool if it permits to answer the question. When absolutely no tools corresponds or you lack an argument, you are encouraged to take an initiative and infere the missing argument or the response based on your knowledge and be honest about the initiative you took."
+                "content": "You are an agentic assistant that can use tools. Planning & batching rule: Privately plan the solution first. If tools are needed and their inputs are known, emit all required tool calls in one turn. Prefer one batched turn with multiple tool calls over multiple incremental turns. When not to batch: If a later tool’s inputs depend on the output of an earlier tool, call only the prerequisite tools first; otherwise batch. No redundant calls: Do not call the same tool twice with identical arguments. Idempotence: Prefer arguments that make calls idempotent and cache-friendly. Termination: – If no tool is needed, answer directly. – After tool results are returned (role:tool), either batch any remaining calls (if now fully specified) or produce a clear final answer. – If information is insufficient even after tools, explain what’s missing and stop. Output contract: Never emit additional tool calls after your final answer."
             }
         ]
         # Add a small Harmony nudge only when using GPT-OSS
-        model = os.getenv("MODEL", "llama3.1:8b")
+        model = os.getenv("MODEL")
         if is_gpt_oss(model):
             self.messages.append({
                 "role": "system",
@@ -90,10 +90,15 @@ class MCPClient:
         # List available tools
         response = await self.session.list_tools()
         tools = response.tools
-        print("Model :", os.getenv("MODEL", "llama3.1:8b"))
+        print("Model :", os.getenv("MODEL"))
+        print("Reasoning :", os.getenv("GPT_OSS_REASONING", "medium")) if is_gpt_oss(os.getenv("MODEL")) else None
         print(f"Connected via {transport} to server with tools:", [tool.name for tool in tools])
 
     async def process_and_print(self, model: str, messages: list, available_tools: list, print_all_output: bool):
+        """Process user query or model's past reasoning and tool calls and prints response as it gets generated.
+        The model returns its thinking and its answer.
+        We only return its answer and tool calls.
+        If no answer, we return the thinking as its answer."""
         # Prepare common kwargs; add Harmony options if GPT-OSS
         kwargs = dict(
             model=model,
@@ -116,6 +121,7 @@ class MCPClient:
         # Optionally capture reasoning chunks (kept internal)
         reasoning_chunks = []
 
+        is_reasoning=True
         for chunk in stream:
             delta = chunk.choices[0].delta
 
@@ -124,12 +130,18 @@ class MCPClient:
                 content_chunk = delta.content
                 response_message_chunks.append(content_chunk)
                 if print_all_output:
+                    if not is_reasoning:
+                        print("\n\nResponse:", end=" ")
+                        is_reasoning=True
                     print(content_chunk, end="")
 
             # Reasoning stream (GPT-OSS)
             if hasattr(delta, "reasoning") and delta.reasoning:
                 reasoning_chunks.append(delta.reasoning)
                 if print_all_output:
+                    if is_reasoning:
+                        print("Reasoning:", end=" ")
+                        is_reasoning=False
                     print(delta.reasoning, end="")
 
             # Tool calls
@@ -143,28 +155,6 @@ class MCPClient:
         response_message = "".join(response_message_chunks).strip()
         if not response_message:
             response_message = "Reasoning : " + "".join(reasoning_chunks).strip()
-            
-        # Harmony fallback: if content is empty, try a non-stream fetch for final or reasoning
-        if not response_message:
-            print("No response received, attempting fallback...") #for debugging
-            try:
-                non_stream_kwargs = dict(
-                    model=model,
-                    messages=messages,
-                    temperature=1.1,
-                    max_tokens=1000,
-                    stream=False
-                )
-                if is_gpt_oss(model):
-                    non_stream_kwargs["reasoning_effort"] = os.getenv("GPT_OSS_REASONING", "medium")
-
-                resp = self.client.chat.completions.create(**non_stream_kwargs)
-                msg = resp.choices[0].message
-                response_message = (msg.content or getattr(msg, "reasoning", "") or "").strip()
-            except Exception:
-                # As a last resort, if we captured streamed reasoning, expose a trimmed version
-                if reasoning_chunks:
-                    response_message = "".join(reasoning_chunks).strip()[:800]
 
         return response_message, tool_calls
 
@@ -187,45 +177,91 @@ class MCPClient:
         except Exception as e:
             if print_all_output:
                 print(f"Error executing tool {tool_call.function.name}: {str(e)}")
-            tool_result = "Error"
+            tool_result = f"[tool_error] {e}"
 
-        return tool_result
+        # Stringify content (Harmony/Chat Completions expects a string)
+        if isinstance(tool_result, (dict, list)):
+            tool_content = json.dumps(tool_result, ensure_ascii=False)
+        else:
+            tool_content = "" if tool_result is None else str(tool_result)
+            
+        return tool_content
 
-    async def process_query(self, query: str, model: str, print_all_output: bool) -> str:
-        """Process a query using Groq (OpenAI-compatible) and available tools"""
+    async def process_query(self, query: str, model: str, print_all_output: bool, max_iters: int=6) -> str:
+        """Process a query using Groq (OpenAI-compatible) and MCP tools in an agent loop."""
         messages = list(self.messages) + [{"role": "user", "content": query}]
 
         tools_list = await self.session.list_tools()
         available_tools = [{"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.inputSchema}} for tool in tools_list.tools]
         
-        response_message, tool_calls = await self.process_and_print(model, messages, available_tools, print_all_output)
+        for step in range(max_iters):
+            if print_all_output:
+                print(f"\n[Iteration:] {step+1}/{max_iters}")
 
-        messages.append({"role": "assistant", "content": response_message})
+            # 2.a) Call the model with tools enabled
+            assistant_text, tool_calls = await self.process_and_print(model=model, messages=messages, available_tools=available_tools, print_all_output=print_all_output)
 
-        if not tool_calls:  # If no tool call is needed, simply print the first response (if not already printed)
-            if not print_all_output:
-                print("No tools needed. \n")
-                print(response_message)
-        
-        else:
-            if len(tool_calls) > 1:  # for debug/curiosity
-                print(f"Multiple tool calls: \n{len(tool_calls)} tool calls detected.")
-            for tool_call in tool_calls:
-                tool_result = await self.execute_tool_call(tool_call, print_all_output=print_all_output)
+            # 2.b) Append the assistant turn (with tool_calls, if any)
+            assistant_msg = {"role": "assistant", "content": assistant_text}
+
+            # process_and_print() te renvoie des tool_calls "reconstruits".
+            # On les remet dans le format messages pour l'historique.
+            if tool_calls:
                 if print_all_output:
-                    print(f"Tool call : {tool_call.function.name} was called with arguments {tool_call.function.arguments} with result: {tool_result}")
+                    print("Number of tool calls:", len(tool_calls))
+                formatted_calls = []
+                for tc in tool_calls:
+                    formatted_calls.append({
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments or "{}"
+                        }
+                    })
+                assistant_msg["tool_calls"] = formatted_calls
 
-                # Simplified conversation format for better understanding
+            messages.append(assistant_msg)
+
+            # 2.c) If no tools requested → final answer, stop. We print the response only if not already printed.
+            if not tool_calls:
+                if not print_all_output:
+                    print("Final Response: ", assistant_text)
+                return
+
+            # 2.d) Execute each tool call and push a `role:"tool"` message for each
+            for tc in tool_calls:
+                name = tc.function.name
+                raw_args = tc.function.arguments
+
+                tool_content = await self.execute_tool_call(tc, print_all_output=print_all_output)
+
+                # Append the tool message (required fields)
                 messages.append({
-                    "role": "assistant",
-                    "content": f"Tool call : {tool_call.function.name} was called with arguments {tool_call.function.arguments}, with result: {tool_result}"
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": name,
+                    "content": tool_content
                 })
 
-            # Generate final response (no tools this time). This format enables to work further with the response.
-            messages.append({
-                "role": "assistant",
-                "content": await self.process_and_print(model, messages, available_tools=None, print_all_output=True)
-            })
+                if print_all_output:
+                    print(f"[Tool call:] {name}({raw_args}) -> {tool_content[:200]}")
+
+            #  Now, the model can see which tools were called
+            #  And can decide between calling new tools are giving a final answer
+
+        # 3) If we exit by max_iters, try to finalize with a last non-tool turn
+        print(f"\n[agent] reached max_iters={max_iters}; forcing a finalization turn.")
+        messages.append({"role": "user", "content": "You have reached maximum number of iterations. Do produce a final answer. You may not call any more tools."})
+        start = time.time()
+        final_answer, _ = await self.process_and_print(
+            model=model,
+            messages=messages,
+            available_tools=None,                 # deactivate tools to force the model to conclude
+            print_all_output=True
+        )
+        print("CHARGEEEEE : ",final_answer)
+        print(f"Final Response Time: {time.time() - start:.2f} seconds")
 
 
     async def chat_loop(self):
