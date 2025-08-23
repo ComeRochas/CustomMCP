@@ -2,6 +2,7 @@ import asyncio
 import os
 from typing import Optional
 from contextlib import AsyncExitStack
+import json
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.streamable_http import streamablehttp_client
@@ -10,26 +11,33 @@ from mcp.client.sse import sse_client
 
 import time
 from openai import AsyncOpenAI
+from groq import Groq
 from dotenv import load_dotenv
 
-load_dotenv()  # load environment variables from .env
+load_dotenv()
+
+def is_gpt_oss(model: str) -> bool:
+    return isinstance(model, str) and model.startswith("openai/gpt-oss")
 
 class MCPClient:
     def __init__(self):
         # Initialize session and client objects
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
-        # Configure Ollama client
-        self.ollama_client = AsyncOpenAI(
-            base_url="http://localhost:11434/v1",  # Ollama API endpoint
-            api_key="ollama"  # Ollama doesn't need a real API key
-        )
+        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         self.messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Respond naturally to user queries. You may call a tool if it permits to answer the question. When absolutely no tools corresponds or you lack an argument, you are encouraged to take an initiative and infere the missing argument or the response based on your knowledge and be honest about the initiative you took."
+                "content": "You are an agentic assistant that can use tools. Planning & batching rule: Privately plan the solution first. If tools are needed and their inputs are known, emit all required tool calls in one turn. Prefer one batched turn with multiple tool calls over multiple incremental turns. When not to batch: If a later tool’s inputs depend on the output of an earlier tool, call only the prerequisite tools first; otherwise batch. No redundant calls: Do not call the same tool twice with identical arguments. Idempotence: Prefer arguments that make calls idempotent and cache-friendly. Termination: – If no tool is needed, answer directly. – After tool results are returned (role:tool), either batch any remaining calls (if now fully specified) or produce a clear final answer. – If information is insufficient even after tools, explain what’s missing and stop. Output contract: Never emit additional tool calls after your final answer."
             }
         ]
+        # Add a small Harmony nudge only when using GPT-OSS
+        model = os.getenv("MODEL")
+        if is_gpt_oss(model):
+            self.messages.append({
+                "role": "system",
+                "content": "Think privately if needed. Then ALWAYS provide a clear final answer in the assistant message body."
+            })
 
     async def connect_to_server(self, server_path_or_url: str):
         """Connect to an MCP server via STDIO or SSE based on TRANSPORT env variable
@@ -82,87 +90,179 @@ class MCPClient:
         # List available tools
         response = await self.session.list_tools()
         tools = response.tools
-        print("Model :", os.getenv("MODEL", "llama3.1:8b"))
+        print("Model :", os.getenv("MODEL"))
+        print("Reasoning :", os.getenv("GPT_OSS_REASONING", "medium")) if is_gpt_oss(os.getenv("MODEL")) else None
         print(f"Connected via {transport} to server with tools:", [tool.name for tool in tools])
 
-    async def process_query(self, query: str, model: str) -> str:
-        """Process a query using Ollama and available tools"""
-        self.messages.append({"role": "user", "content": query})
+    async def process_and_print(self, model: str, messages: list, available_tools: list, print_all_output: bool):
+        """Process user query or model's past reasoning and tool calls and prints response as it gets generated.
+        The model returns its thinking and its answer.
+        We only return its answer and tool calls.
+        If no answer, we return the thinking as its answer."""
+        # Prepare common kwargs; add Harmony options if GPT-OSS
+        kwargs = dict(
+            model=model,
+            messages=messages,
+            temperature=1.1,
+            max_tokens=1000,
+            stream=True
+        )
+        if available_tools is not None:
+            kwargs["tools"] = available_tools
+
+        if is_gpt_oss(model):
+            kwargs["reasoning_effort"] = os.getenv("GPT_OSS_REASONING", "medium")
+
+        stream = self.client.chat.completions.create(**kwargs)
+        
+        # Variables pour gérer le streaming
+        response_message_chunks = []
+        tool_calls = []
+        # Optionally capture reasoning chunks (kept internal)
+        reasoning_chunks = []
+
+        is_reasoning=True
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+
+            # Visible content
+            if delta.content is not None:
+                content_chunk = delta.content
+                response_message_chunks.append(content_chunk)
+                if print_all_output:
+                    if not is_reasoning:
+                        print("\n\nResponse:", end=" ")
+                        is_reasoning=True
+                    print(content_chunk, end="")
+
+            # Reasoning stream (GPT-OSS)
+            if hasattr(delta, "reasoning") and delta.reasoning:
+                reasoning_chunks.append(delta.reasoning)
+                if print_all_output:
+                    if is_reasoning:
+                        print("Reasoning:", end=" ")
+                        is_reasoning=False
+                    print(delta.reasoning, end="")
+
+            # Tool calls
+            if delta.tool_calls:
+                tool_calls.extend(delta.tool_calls)
+
+        if print_all_output:
+            print()  # Retour à la ligne final
+
+        # Assembler le contenu complet
+        response_message = "".join(response_message_chunks).strip()
+        if not response_message:
+            response_message = "Reasoning : " + "".join(reasoning_chunks).strip()
+
+        return response_message, tool_calls
+
+    async def execute_tool_call(self, tool_call, print_all_output: bool) -> str:
+        """Execute a tool call and return the result"""
+        tool_name = tool_call.function.name
+        
+        try:
+            # Parse JSON string to dict more safely
+            tool_args = json.loads(tool_call.function.arguments)
+        except (json.JSONDecodeError, ValueError) as e:
+            if print_all_output:
+                print(f"Warning: Failed to parse {tool_name} arguments: {e}")
+            tool_args = {}
+
+        # Execute tool call
+        try:
+            result = await self.session.call_tool(tool_name, tool_args)
+            tool_result = result.content[0].text if hasattr(result, 'content') else str(result)
+        except Exception as e:
+            if print_all_output:
+                print(f"Error executing tool {tool_call.function.name}: {str(e)}")
+            tool_result = f"[tool_error] {e}"
+
+        # Stringify content (Harmony/Chat Completions expects a string)
+        if isinstance(tool_result, (dict, list)):
+            tool_content = json.dumps(tool_result, ensure_ascii=False)
+        else:
+            tool_content = "" if tool_result is None else str(tool_result)
+            
+        return tool_content
+
+    async def process_query(self, query: str, model: str, print_all_output: bool, max_iters: int=6) -> str:
+        """Process a query using Groq (OpenAI-compatible) and MCP tools in an agent loop."""
+        messages = list(self.messages) + [{"role": "user", "content": query}]
 
         tools_list = await self.session.list_tools()
-        available_tools = [{ 
-            "type": "function",
-            "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.inputSchema
-            }
-        } for tool in tools_list.tools]
+        available_tools = [{"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.inputSchema}} for tool in tools_list.tools]
+        
+        for step in range(max_iters):
+            if print_all_output:
+                print(f"\n[Iteration:] {step+1}/{max_iters}")
 
-        # Initial Ollama API call
-        response = await self.ollama_client.chat.completions.create(
-            model=model,
-            max_tokens=1000,
-            messages=self.messages,
-            tools=available_tools,
-            tool_choice="auto"
-        )
+            # 2.a) Call the model with tools enabled
+            assistant_text, tool_calls = await self.process_and_print(model=model, messages=messages, available_tools=available_tools, print_all_output=print_all_output)
 
-        # Process response and handle tool calls
-        final_text = []
+            # 2.b) Append the assistant turn (with tool_calls, if any)
+            assistant_msg = {"role": "assistant", "content": assistant_text}
 
-        message = response.choices[0].message
-        self.messages.append({"role": "assistant", "content": message.content})
-
-        # For debugging
-        if message.content and os.getenv("PRINT_ALL_MODEL_OUTPUT", "false").lower() == "true":
-            final_text.append("First answer from the model: " + message.content)
-
-        if message.tool_calls:
-            for tool_call in message.tool_calls:
-                tool_name = tool_call.function.name
-                try:
-                    # Parse JSON string to dict more safely
-                    import json
-                    tool_args = json.loads(tool_call.function.arguments)
-                except (json.JSONDecodeError, ValueError) as e:
-                    print(f"Warning: Failed to parse tool arguments: {e}")
-                    tool_args = {}
-
-                # Execute tool call
-                try:
-                    result = await self.session.call_tool(tool_name, tool_args)
-                    tool_result = result.content[0].text if hasattr(result, 'content') else str(result)
-                    
-                    # For debugging
-                    if os.getenv("PRINT_ALL_MODEL_OUTPUT", "false").lower() == "true":
-                        final_text.append(f"Tool call : {tool_name} was called, with result: {tool_result}...")
-
-                    # Simplified conversation format for better understanding
-                    self.messages.append({
-                        "role": "tool",
-                        "content": f"Tool call : {tool_name} was called, with result: {tool_result}..."
+            # process_and_print() te renvoie des tool_calls "reconstruits".
+            # On les remet dans le format messages pour l'historique.
+            if tool_calls:
+                if print_all_output:
+                    print("Number of tool calls:", len(tool_calls))
+                formatted_calls = []
+                for tc in tool_calls:
+                    formatted_calls.append({
+                        "id": tc.id,
+                        "type": tc.type,
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments or "{}"
+                        }
                     })
+                assistant_msg["tool_calls"] = formatted_calls
 
-                    # Get next response from Ollama
-                    follow_up_response = await self.ollama_client.chat.completions.create(
-                        model=model, 
-                        max_tokens=1000,
-                        messages=self.messages,
-                    )
+            messages.append(assistant_msg)
 
-                    response_message = follow_up_response.choices[0].message
-                    self.messages.append({"role": "assistant", "content": response_message.content})
-                    final_text.append("Response: " + response_message.content)
+            # 2.c) If no tools requested → final answer, stop. We print the response only if not already printed.
+            if not tool_calls:
+                if not print_all_output:
+                    print("Final Response: ", assistant_text)
+                return
 
-                except Exception as e:
-                    final_text.append(f"[Error executing tool {tool_name}: {str(e)}]")
-                    print(f"Tool execution error: {e}")
+            # 2.d) Execute each tool call and push a `role:"tool"` message for each
+            for tc in tool_calls:
+                name = tc.function.name
+                raw_args = tc.function.arguments
 
-        else:
-            # If no tool calls, just return the initial response
-            final_text.append("Response: " + message.content)
-        return "\n".join(final_text)
+                tool_content = await self.execute_tool_call(tc, print_all_output=print_all_output)
+
+                # Append the tool message (required fields)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "name": name,
+                    "content": tool_content
+                })
+
+                if print_all_output:
+                    print(f"[Tool call:] {name}({raw_args}) -> {tool_content[:200]}")
+
+            #  Now, the model can see which tools were called
+            #  And can decide between calling new tools are giving a final answer
+
+        # 3) If we exit by max_iters, try to finalize with a last non-tool turn
+        print(f"\n[agent] reached max_iters={max_iters}; forcing a finalization turn.")
+        messages.append({"role": "user", "content": "You have reached maximum number of iterations. Do produce a final answer. You may not call any more tools."})
+        start = time.time()
+        final_answer, _ = await self.process_and_print(
+            model=model,
+            messages=messages,
+            available_tools=None,                 # deactivate tools to force the model to conclude
+            print_all_output=True
+        )
+        print("CHARGEEEEE : ",final_answer)
+        print(f"Final Response Time: {time.time() - start:.2f} seconds")
+
 
     async def chat_loop(self):
         """Run an interactive chat loop"""
@@ -173,13 +273,13 @@ class MCPClient:
             try:
                 query = input("\nQuery: ").strip()
                 start = time.time()
-                
+
                 if query.lower() == 'quit':
                     break
 
-                model = os.getenv("MODEL", "llama3.1:8b")
-                response = await self.process_query(query, model)
-                print("\n" + response)
+                model = os.getenv("MODEL")
+                print_all_output = os.getenv("PRINT_ALL_MODEL_OUTPUT", "False") == "True"
+                await self.process_query(query, model, print_all_output)
                 print(f"Response time: {time.time() - start:.2f} seconds")
                     
             except Exception as e:
