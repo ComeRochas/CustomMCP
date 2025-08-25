@@ -56,7 +56,8 @@ class WeatherTools:
         return "\n---\n".join(alerts)
 
     async def get_forecast(self, latitude: float, longitude: float) -> str:
-        """Get weather forecast for a location.
+        """WORKS ONLY IN THE US!!
+        Get weather forecast for a location in the US.
 
         Args:
             latitude: Latitude of the location

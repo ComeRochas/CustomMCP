@@ -4,6 +4,7 @@ import logging
 import os
 from config import config
 from tools import CalculatorTools, WeatherTools, TimeTools, LocationTools, WebTools
+from typing import List, Dict, Any
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -45,8 +46,8 @@ def create_server() -> FastMCP:
     # Register weather tools
     @server.tool()
     async def get_forecast(latitude: float, longitude: float) -> str:
-        """Get weather forecast for a location.
-        
+        """Get weather forecast for a location in the US.
+
         Args:
             latitude: Latitude coordinate (-90 to 90)
             longitude: Longitude coordinate (-180 to 180)
@@ -110,14 +111,14 @@ def create_server() -> FastMCP:
                 'message': f"Error retrieving location for IP {ip_address}: {str(e)}"
             }
     
-    # Register web search tools
+    
     @server.tool()
-    async def duckduckgo_search(query: str, max_results: int = 5) -> list:
+    async def duckduckgo_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         """Search the web using DuckDuckGo.
         
         Args:
             query: Search query string
-            max_results: Maximum number of results to return (1-20, default: 5)
+            max_results: Maximum number of results to return (use less than 5 unless you really think more is needed).
             
         Returns a list of search results with title, URL, and snippet.
         """

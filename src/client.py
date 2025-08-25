@@ -28,7 +28,7 @@ class MCPClient:
         self.messages = [
             {
                 "role": "system",
-                "content": "You are an agentic assistant that can use tools. Planning & batching rule: Privately plan the solution first. If tools are needed and their inputs are known, emit all required tool calls in one turn. Prefer one batched turn with multiple tool calls over multiple incremental turns. When not to batch: If a later tool’s inputs depend on the output of an earlier tool, call only the prerequisite tools first; otherwise batch. No redundant calls: Do not call the same tool twice with identical arguments. Idempotence: Prefer arguments that make calls idempotent and cache-friendly. Termination: – If no tool is needed, answer directly. – After tool results are returned (role:tool), either batch any remaining calls (if now fully specified) or produce a clear final answer. – If information is insufficient even after tools, explain what’s missing and stop. Output contract: Never emit additional tool calls after your final answer."
+                "content": "You are an agentic assistant that can use tools. Planning rule: Privately plan the solution first. If tools are needed and their inputs are known, emit all required tool calls in one turn. No redundant calls: Do not call the same tool twice with identical arguments. Idempotence: Prefer arguments that make calls idempotent and cache-friendly. Termination: – If no tool is needed, answer directly. – After tool results are returned (role:tool), either batch any remaining calls (if now fully specified) or produce a clear final answer. – If information is insufficient even after tools, explain what’s missing and stop. Output contract: Never emit additional tool calls after your final answer."
             }
         ]
         # Add a small Harmony nudge only when using GPT-OSS
@@ -37,6 +37,11 @@ class MCPClient:
             self.messages.append({
                 "role": "system",
                 "content": "Think privately if needed. Then ALWAYS provide a clear final answer in the assistant message body."
+            })
+        else: #GPT-OSS cannot return multiple tool calls at once.
+            self.messages.append({
+                "role": "system",
+                "content": "Batching rule: Prefer one batched turn with multiple tool calls over multiple incremental turns. When not to batch: If a later tool’s inputs depend on the output of an earlier tool, call only the prerequisite tools first; otherwise batch."
             })
 
     async def connect_to_server(self, server_path_or_url: str):
@@ -156,7 +161,23 @@ class MCPClient:
         if not response_message:
             response_message = "Reasoning : " + "".join(reasoning_chunks).strip()
 
-        return response_message, tool_calls
+        assistant_msg = {"role": "assistant", "content": response_message}
+        
+        if tool_calls:
+            formatted_calls = []
+            for tc in tool_calls:
+                formatted_calls.append({
+                "id": tc.id,
+                "type": tc.type,
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments or "{}"
+                }
+            })
+                
+            assistant_msg["tool_calls"] = formatted_calls
+            
+        return assistant_msg, tool_calls
 
     async def execute_tool_call(self, tool_call, print_all_output: bool) -> str:
         """Execute a tool call and return the result"""
@@ -173,7 +194,7 @@ class MCPClient:
         # Execute tool call
         try:
             result = await self.session.call_tool(tool_name, tool_args)
-            tool_result = result.content[0].text if hasattr(result, 'content') else str(result)
+            tool_result = [result.content[i].text for i in range(len(result.content))] if hasattr(result, 'content') else str(result)
         except Exception as e:
             if print_all_output:
                 print(f"Error executing tool {tool_call.function.name}: {str(e)}")
@@ -187,7 +208,7 @@ class MCPClient:
             
         return tool_content
 
-    async def process_query(self, query: str, model: str, print_all_output: bool, max_iters: int=6) -> str:
+    async def process_query(self, query: str, model: str, print_all_output: bool, max_iters: int=8) -> str:
         """Process a query using Groq (OpenAI-compatible) and MCP tools in an agent loop."""
         messages = list(self.messages) + [{"role": "user", "content": query}]
 
@@ -199,56 +220,43 @@ class MCPClient:
                 print(f"\n[Iteration:] {step+1}/{max_iters}")
 
             # 2.a) Call the model with tools enabled
-            assistant_text, tool_calls = await self.process_and_print(model=model, messages=messages, available_tools=available_tools, print_all_output=print_all_output)
-
-            # 2.b) Append the assistant turn (with tool_calls, if any)
-            assistant_msg = {"role": "assistant", "content": assistant_text}
-
-            # process_and_print() te renvoie des tool_calls "reconstruits".
-            # On les remet dans le format messages pour l'historique.
-            if tool_calls:
-                if print_all_output:
-                    print("Number of tool calls:", len(tool_calls))
-                formatted_calls = []
-                for tc in tool_calls:
-                    formatted_calls.append({
-                        "id": tc.id,
-                        "type": tc.type,
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments or "{}"
-                        }
-                    })
-                assistant_msg["tool_calls"] = formatted_calls
-
+            assistant_msg, tool_calls = await self.process_and_print(model=model, messages=messages, available_tools=available_tools, print_all_output=print_all_output)
             messages.append(assistant_msg)
-
-            # 2.c) If no tools requested → final answer, stop. We print the response only if not already printed.
+            
+            # 2.b) If no tools requested → final answer, stop. We print the response only if not already printed.
             if not tool_calls:
                 if not print_all_output:
-                    print("Final Response: ", assistant_text)
+                    print("Final Response: ", assistant_msg["content"])
                 return
 
-            # 2.d) Execute each tool call and push a `role:"tool"` message for each
-            for tc in tool_calls:
-                name = tc.function.name
-                raw_args = tc.function.arguments
-
-                tool_content = await self.execute_tool_call(tc, print_all_output=print_all_output)
-
-                # Append the tool message (required fields)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "name": name,
-                    "content": tool_content
-                })
-
+            # 2.c) If tools requested, the user approves before they are called
+            if print_all_output:
+                print("")
+            user_approval = input(f"The model wants to call {', '.join(tc.function.name for tc in tool_calls)}. Do you approve? (y/n): ").strip().lower()
+            if user_approval.lower() == 'y':
+                # 2.c) Execute each tool call and push a `role:"tool"` message for each
                 if print_all_output:
-                    print(f"[Tool call:] {name}({raw_args}) -> {tool_content[:200]}")
+                    print("Number of tool calls:", len(tool_calls))
+                for tc in tool_calls:
+                    name = tc.function.name
+                    raw_args = tc.function.arguments
 
-            #  Now, the model can see which tools were called
-            #  And can decide between calling new tools are giving a final answer
+                    tool_content = await self.execute_tool_call(tc, print_all_output=print_all_output)
+
+                    # Append the tool message (required fields)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": name,
+                        "content": tool_content
+                    })
+
+                    if print_all_output:
+                        print(f"[Tool call:] {name}({raw_args}) -> {tool_content}")
+            else:
+                user_request = "Tool call was not approved." + input("Please guide the model's next steps:")
+                messages.append({"role": "user", "content": user_request})
+
 
         # 3) If we exit by max_iters, try to finalize with a last non-tool turn
         print(f"\n[agent] reached max_iters={max_iters}; forcing a finalization turn.")
@@ -260,7 +268,6 @@ class MCPClient:
             available_tools=None,                 # deactivate tools to force the model to conclude
             print_all_output=True
         )
-        print("CHARGEEEEE : ",final_answer)
         print(f"Final Response Time: {time.time() - start:.2f} seconds")
 
 
