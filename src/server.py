@@ -71,13 +71,13 @@ def create_server() -> FastMCP:
             logger.error(f"Alerts error: {e}")
             return f"Error retrieving alerts: {str(e)}"
     
-    # Register utility tools
+    
     @server.tool()
     async def get_time(ctx: Context) -> str:
         """Get current UTC time in ISO format."""
         return await time_tools.get_current_time()
     
-    # Register location tools
+    
     @server.tool()
     async def get_location() -> dict:
         """Get current location using IP geolocation.
