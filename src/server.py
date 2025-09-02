@@ -3,12 +3,15 @@ from dotenv import load_dotenv
 import logging
 import os
 from config import config
-from tools import CalculatorTools, WeatherTools, TimeTools, LocationTools, WebTools
-from typing import List, Dict, Any
+from tools import CalculatorTools, WeatherTools, TimeTools, LocationTools, WebSearch
+from typing import List, Dict, Any, Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Load environment variables
+load_dotenv()
 
 def create_server() -> FastMCP:
     """Create and configure the MCP server."""
@@ -25,7 +28,7 @@ def create_server() -> FastMCP:
     weather_tools = WeatherTools()
     time_tools = TimeTools()
     location_tools = LocationTools()
-    web_tools = WebTools()
+    web_tools = WebSearch(brave_api_key=os.getenv("BRAVE_API_KEY"), logger=logger)
     
     # Register calculator tools
     @server.tool()
@@ -113,17 +116,18 @@ def create_server() -> FastMCP:
     
     
     @server.tool()
-    async def duckduckgo_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
-        """Search the web using DuckDuckGo.
+    async def brave_search(keywords: str, max_results: int = 5, country: Optional[str] = "us") -> List[Dict[str, Any]]:
+        """Search the web using BraveSearch API.
         
         Args:
-            query: Search query string
+            keywords: Search query
             max_results: Maximum number of results to return (use less than 5 unless you really think more is needed).
-            
+            country: 2-letter country code (e.g., "us", "fr", "sg")
+
         Returns a list of search results with title, URL, and snippet.
         """
         try:
-            return await web_tools.duckduckgo_search(query, max_results)
+            return await web_tools.brave_search(keywords, max_results, country)
         except Exception as e:
             logger.error(f"Web search error: {e}")
             return [{
@@ -133,13 +137,13 @@ def create_server() -> FastMCP:
     
     
     @server.tool()
-    async def fetch_url_content(url: str, max_length: int = 5000, mode: str = "raw") -> dict:
+    async def fetch_url_content(url: str, max_length: int = 5000, mode: str = "readable") -> dict:
         """Fetch and extract text content from a URL.
         
         Args:
             url: URL to fetch content from
             max_length: Maximum length of text content to return (default: 5000)
-            mode: "raw" returns HTML text; "readable" returns extracted article text
+            mode: "readable" returns extracted article text ; "raw" returns HTML text
         """
         try:
             return await web_tools.fetch_url_content(url, max_length, mode)
