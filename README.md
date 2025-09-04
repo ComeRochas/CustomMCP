@@ -1,20 +1,7 @@
 # CustomMCP - Personal MCP Server Implementation
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-blue.svg)](https://modelcontextprotocol.io)
-[![Docker](https://img.shields.io/badge/docker-ready-blue.svg)](https://docker.com)
+A personal implementation of a MCP Client consisting in a chatbot powered by GPT-OSS and an MCP server showcasing web search, location tools, calculator tools.
 
-A personal implementation of a MCP Client consisting in a chatbot powered by GPT-OSS and an MCP server showcasing web search, weather data integration, calculator tools, and multi-transport support. Built as a learning project to demonstrate MCP protocol understanding.
-
-## 🚀 Features
-
-- **Web Search Tools**: Search the web via keywords or search a specific url via DuckDuckGo API
-- **Weather Integration**: Real-time weather forecasts and alerts via National Weather Service API (in the US only)
-- **Calculator Tools**: Basic mathematical operations (add, subtract, multiply, divide, power)
-- **Time Utilities**: Current time and timestamp functions
-- **Multi-Transport Support**: SSE, streamable-http, and stdio protocols
-- **Docker Ready**: Containerized deployment with environment configuration
-- **Interactive Client**: Demonstration client with Ollama integration
 
 ## 🏗️ Project Structure
 
@@ -22,14 +9,15 @@ A personal implementation of a MCP Client consisting in a chatbot powered by GPT
 CustomMCP/
 ├── src/
 │   ├── server.py        # Main MCP server
-│   ├── client.py        # Demo client with Ollama
+│   ├── client.py        # Chatbot powered by Groq
 │   ├── config.py        # Configuration management
 │   └── tools/           # Tool implementations
 │       ├── calculator.py
-│       ├── weather.py
+│       ├── location.py
 │       ├── web_search.py
 │       └── time_utils.py
-└── docker/              # Docker configuration
+├── requirements.txt
+└── README.md
 
 ```
 
@@ -52,17 +40,36 @@ in another terminal : uv run src/client.py <url_to_the_server>/sse (e.g. http://
 streamable-http -> in a terminal : uv run src/server.py
 in another terminal : uv run src/client.py <url_to_the_server>/mcp (e.g. http://localhost:8050/mcp)
 
-## Available Tools
+
+## Client 
+
+The client side is entirely defined in 'src/client.py' and interacts with the server via Model Context Protocol, which is defined in mcp library. It is a chatbot powered by Groq (a tool which enables you to call LLMs and runs calculation on external hardware).
+
+The chatbot is defined with the following logic :
+- A loop is instantiated, where the model expects a query from the user
+- The model reasons and determines whether it needs to call tools to answer the query. 
+- If no tools are needed, it directly answers.
+- If tools are needed, tools will be successfuly called (requesting approval from the user before every tool call).
+- After all tools were called (or when the model was called too many times in a row, to prevent excessive token use), an answer is produced.
+-> The loop restarts, and the model does not remember the conversation history.
+
+This logic is divided in different functions for the code to be more readable. Model's reasoning is shown to the user via streaming (tokens are printed as they are being processed). When parameter 'print_all_output=False' in '.env', only the model's very last answer (after tool calls) is printed.
+
+## Server
+
+In order to add tools, you can :
+- Create a new toolclass.py in src/tools/
+- Define your ToolClass in toolclass.py in which you create the functions you wish to add
+- Add your ToolClass to src/tools/__init__.py
+- Add your defined tools to src/client.py, declaring them with @server.tool()
+
+These are the exact files you have to create/modify in order to add/remove tools. You can simply copy the syntax from the tools already created.
 
 #### Web Tools
 
-- `duckduckgo_search(query, max_results)` - Search the web using DuckDuckGo
-- `duckduckgo_search(url, max_length, mode)` - Fetch and extract text content from a URL
+- `brave_search(keywords, max_results, country[Opt])` - Search the web using DuckDuckGo
+- `fetch_url_content(url, max_length, mode)` - Fetch and extract text content from a URL
 
-#### Weather Tools
-
-- `get_forecast(latitude, longitude)` - Get 5-day weather forecast in the US
-- `get_alerts(state)` - Get active weather alerts for US states
 
 #### Calculator Tools
 
@@ -102,31 +109,9 @@ PRINT_ALL_MODEL_OUTPUT=True # Print all model output to console (useful for debu
 GPT_OSS_REASONING=medium
 
 GROQ_API_KEY=YOUR_GROQ_API_KEY
+BRAVE_API_KEY=YOUR_BRAVE_API_KEY
 ```
 
-## 🐳 Docker Deployment
-
-See [Docker README](docker/README.md) for detailed Docker setup and deployment options.
-
-## 🛠️ Development
-
-### Prerequisites
-
-- Python 3.11+
-- pip or uv package manager
-- Docker (optional)
-
-## 🎯 Project Goals
-
-This is a personal learning project to:
-
-- Understand the Model Control Protocol specification
-- Practice modern Python development patterns
-- Explore AI tool integration possibilities
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 

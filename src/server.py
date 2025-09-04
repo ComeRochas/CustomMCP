@@ -25,7 +25,6 @@ def create_server() -> FastMCP:
     
     # Initialize tool handlers
     calc_tools = CalculatorTools()
-    weather_tools = WeatherTools()
     time_tools = TimeTools()
     location_tools = LocationTools()
     web_tools = WebSearch(brave_api_key=os.getenv("BRAVE_API_KEY"), logger=logger)
@@ -46,41 +45,15 @@ def create_server() -> FastMCP:
         """Multiply two numbers."""
         return calc_tools.multiply(a, b)
     
-    # Register weather tools
-    @server.tool()
-    async def get_forecast(latitude: float, longitude: float) -> str:
-        """Get weather forecast for a location in the US.
 
-        Args:
-            latitude: Latitude coordinate (-90 to 90)
-            longitude: Longitude coordinate (-180 to 180)
-        """
-        try:
-            return await weather_tools.get_forecast(latitude, longitude)
-        except Exception as e:
-            logger.error(f"Forecast error: {e}")
-            return f"Error retrieving forecast: {str(e)}"
-    
-    @server.tool()
-    async def get_alerts(state: str) -> str:
-        """Get weather alerts for a US state.
-        
-        Args:
-            state: Two-letter US state code (e.g., CA, NY)
-        """
-        try:
-            return await weather_tools.get_alerts(state.upper())
-        except Exception as e:
-            logger.error(f"Alerts error: {e}")
-            return f"Error retrieving alerts: {str(e)}"
-    
-    
+    # Register time tools
     @server.tool()
     async def get_time(ctx: Context) -> str:
         """Get current UTC time in ISO format."""
         return await time_tools.get_current_time()
-    
-    
+
+
+    # Register location tools
     @server.tool()
     async def get_location() -> dict:
         """Get current location using IP geolocation.
@@ -113,8 +86,9 @@ def create_server() -> FastMCP:
                 'status': 'error',
                 'message': f"Error retrieving location for IP {ip_address}: {str(e)}"
             }
-    
-    
+
+
+    # Register web search tools
     @server.tool()
     async def brave_search(keywords: str, max_results: int = 5, country: Optional[str] = "us") -> List[Dict[str, Any]]:
         """Search the web using BraveSearch API.

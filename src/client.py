@@ -234,7 +234,7 @@ class MCPClient:
                 print("")
             user_approval = input(f"The model wants to call {', '.join(tc.function.name for tc in tool_calls)}. Do you approve? (y/n): ").strip().lower()
             if user_approval.lower() == 'y':
-                # 2.c) Execute each tool call and push a `role:"tool"` message for each
+                # Execute each tool call and push a `role:"tool"` message for each
                 if print_all_output:
                     print("Number of tool calls:", len(tool_calls))
                 for tc in tool_calls:

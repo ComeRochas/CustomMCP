@@ -1,10 +1,7 @@
-from typing import Optional, List, Dict, Any
-
-import trafilatura
-
-from urllib.parse import urlparse
-
 import aiohttp
+from typing import Optional, List, Dict, Any
+import trafilatura
+from urllib.parse import urlparse
 
 
 class WebSearch:

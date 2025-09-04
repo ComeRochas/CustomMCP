@@ -17,7 +17,7 @@ class Config:
     TRANSPORT: Literal["stdio", "sse", "streamable-http"] = os.getenv("TRANSPORT", "sse")
     
     # Client settings
-    MODEL: str = os.getenv("MODEL", "qwen3:8b")
+    MODEL: str = os.getenv("MODEL", "openai/gpt-oss-120b")
     
     # API settings
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))

@@ -6,5 +6,4 @@ httpx
 anthropic
 aiohttp
 groq
-duckduckgo-search
 trafilatura
